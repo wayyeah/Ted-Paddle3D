@@ -1,0 +1,11 @@
+python infer.py --model_file /home/yw/Paddle3D/output/pv_rcnn.pdmodel \
+    --params_file /home/yw/Paddle3D/output/pv_rcnn.pdiparams \
+    --lidar_file /home/yw/CUDA-PointPillars/data/000000.bin  \
+    --num_point_dim 4 \
+    --use_trt 0  \
+    --trt_precision 0 \
+    --point_cloud_range 0 -40 -3 70.4 40 1 \
+    --trt_use_static 1 \
+    --trt_static_dir /home/yw/Paddle3D/tr_output \
+    --collect_shape_info 1 \
+    --dynamic_shape_file /home/yw/Paddle3D/output/pv_rcnn.txt

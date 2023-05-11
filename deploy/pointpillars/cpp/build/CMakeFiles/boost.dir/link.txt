@@ -1,0 +1,2 @@
+/usr/bin/ar qc libboost.a CMakeFiles/boost.dir/boost_dummy.c.o
+/usr/bin/ranlib libboost.a
