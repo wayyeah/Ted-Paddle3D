@@ -14,7 +14,7 @@
 
 import argparse
 import os
-os.environ['CUDA_VISIBLE_DEVICES']='4'
+os.environ['CUDA_VISIBLE_DEVICES']='1'
 import random
 
 import numpy as np

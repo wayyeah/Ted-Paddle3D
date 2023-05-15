@@ -277,6 +277,7 @@ class TeVoxelBackBone8x(nn.Layer):
                     'x_conv3': this_conv3,
                     'x_conv4': this_conv4,
                 },
+                
                 'multi_scale_3d_strides'+rot_num_id: {
                     'x_conv1': 1,
                     'x_conv2': 2,
@@ -373,8 +374,8 @@ class TeVoxelBackBone8x(nn.Layer):
             voxel_features, voxel_coords = batch_dict['voxel_features'+rot_num_id], batch_dict['voxel_coords'+rot_num_id]
            
             batch_size = batch_dict['batch_size']
-            
-            shape = [batch_size] + list(self.sparse_shape) + [self.input_channels]
+            shape = [batch_dict['batch_size'],int(self.sparse_shape[0]), int(self.sparse_shape[1]), int(self.sparse_shape[2]),self.input_channels]
+            #shape = [batch_size] + list(self.sparse_shape) + [self.input_channels]
            
             input_sp_tensor = sparse.sparse_coo_tensor(
                 values=voxel_features,
@@ -470,9 +471,8 @@ class TeVoxelBackBone8x(nn.Layer):
         return batch_dict
 
     def forward(self, batch_dict):
-        if 'gt_boxes' not in batch_dict:
-            self.training = False
-        if self.training and not self.in_export_mode:
+      
+        if self.training or self.in_export_mode:
             return self.forward_train(batch_dict)
         else:
             return self.forward_test(batch_dict)

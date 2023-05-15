@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import os
-os.environ['CUDA_VISIBLE_DEVICES']='0'
+os.environ['CUDA_VISIBLE_DEVICES']='3'
 
 import argparse
 
@@ -212,7 +212,9 @@ def main(args):
         
         start_time = time.time()
         box3d_lidar, label_preds, scores = run(predictor, points)
-        
+        print("box3d_lidar:",box3d_lidar)
+        print("scores:",scores)
+        print("label_preds:",label_preds)
         print("Inference time: {}".format(time.time() - start_time))
     start_time = time.time()
     box3d_lidar, label_preds, scores = run(predictor, points)

@@ -232,12 +232,13 @@ class AnchorHeadSingle(nn.Layer):
         in_x = (points[:, 1] - minx) / stride
         in_y = (points[:, 2] - miny) / stride
         
-        in_x=in_x.astype("int64")
-        in_y=in_y.astype("int64")
+        in_x=in_x.astype("int32")
+        in_y=in_y.astype("int32")
         in_x =paddle.clip( in_x,max=shape[-1]//10-1)
         in_y = paddle.clip(in_y,max=shape[-2]//10-1)
         mask_large = mask_large.clone().detach().cpu().numpy()
         mask_large[in_y,in_x] = 1
+        return mask_large
         mask_large_index = np.argwhere( mask_large>0 )
         mask_large_index = mask_large_index*10
         index_list=[]
@@ -249,46 +250,56 @@ class AnchorHeadSingle(nn.Layer):
         mask=mask.numpy()
         mask[inds[:,0],inds[:,1]]=1
         mask=paddle.to_tensor(mask).astype("bool")
+        
         return mask
 
     def get_anchor_mask_export(self, data_dict, shape):
-        stride = np.round(self.voxel_size * 8. * 10.)
-        minx = self.range[0]
-        miny = self.range[1]
+        stride = np.round(self.voxel_size*8.*10.)
+        minx=self.range[0]
+        miny=self.range[1]
         points = data_dict["points"]
-        mask = paddle.zeros([shape[-2], shape[-1]], dtype="int32")
-        mask_large = paddle.zeros([shape[-2] // 10, shape[-1] // 10], dtype="int32")
         
+        mask = paddle.zeros([shape[-2],shape[-1]])
+        mask_large = paddle.zeros([shape[-2]//10,shape[-1]//10])
         in_x = (points[:, 1] - minx) / stride
         in_y = (points[:, 2] - miny) / stride
-        in_x = paddle.clip(in_x, max=shape[-1] // 10 - 1).astype("int32")
-        in_y = paddle.clip(in_y, max=shape[-2] // 10 - 1).astype("int32")
+
+        in_x=in_x.astype("int32")
+        in_y=in_y.astype("int32")
+        in_x = paddle.clip(in_x,max=shape[-1]//10-1)
+        in_y = paddle.clip(in_y,max=shape[-2]//10-1)
+
+        indices_large = paddle.stack([in_y, in_x], axis=1)
+
+        unique_indices, inverse_index, counts = paddle.unique(indices_large, return_inverse=True, return_counts=True, axis=0)
+
+        # Create a tensor of ones with shape (num_indices,)
+        updates = paddle.ones([unique_indices.shape[0]])
+
+        mask_large = paddle.scatter_nd(unique_indices, updates, [shape[-2]//10,shape[-1]//10]).astype('bool')
         
-        mask_large = paddle.scatter_nd_add(mask_large, paddle.stack([in_y, in_x], axis=1), paddle.ones_like(in_y))
-        
-        mask_large_index = paddle.nonzero(mask_large)
+
+        mask_large_index = paddle.nonzero(mask_large > 0)
         mask_large_index = mask_large_index * 10
-         
-        index_list = []
-        for i in np.arange(-10, 10, 1):
-            for j in np.arange(-10, 10, 1):
-                index_list.append(mask_large_index + paddle.to_tensor([i, j]))
-        index_list = paddle.concat(index_list, axis=0)
+
+        index_list=[]
         
-        zero_mask = paddle.zeros_like(mask, dtype="int32")
-
-        index_list=index_list.transpose([1, 0])
-
-        for i in range(index_list.shape[0]):
-            zero_mask[index_list[i, 0], index_list[i, 1]] = 1
-
-        mask = zero_mask
-        mask = mask.astype("bool")
-
-
-
-        mask=mask.astype("bool")
-    
+        for i in paddle.arange(-10, 10, 1):
+            for j in paddle.arange(-10, 10, 1):
+                index_list.append(mask_large_index + paddle.to_tensor([i,j]).reshape([1,2]))
+        index_list = paddle.concat(index_list, 0)
+        #存在索引小于0
+        negative_values_first_column = index_list[:, 0] < 0
+        negative_values_second_column = index_list[:, 1] < 0
+        large_values_first_column=index_list[:, 0]>=shape[-2]
+        large_values_second_column=index_list[:, 1]>=shape[-1]
+        positive_rows = paddle.where((negative_values_first_column == 0) & (negative_values_second_column == 0)&(large_values_first_column==0)&(large_values_second_column==0))[0]
+        index_list=index_list[ positive_rows]
+        unique_indices, inverse_index, counts = paddle.unique(index_list, return_inverse=True, return_counts=True, axis=0)
+        unique_indices=unique_indices.reshape([-1,2])
+        updates = paddle.ones([len(unique_indices)], dtype='int32')
+        mask = paddle.scatter_nd(unique_indices,  updates, [shape[-2],shape[-1]]).astype('bool')
+        
         return mask
 
     def forward(self, data_dict):
@@ -296,13 +307,14 @@ class AnchorHeadSingle(nn.Layer):
             self.training=False
         start_time=time.time()
         batch_size=data_dict["batch_size"]
-        if self.in_export_mode:
+        if  self.in_export_mode:
             anchor_mask=self.get_anchor_mask_export(data_dict,data_dict['spatial_features_2d'].shape)
         else:
-            anchor_mask = self.get_anchor_mask(data_dict,data_dict['spatial_features_2d'].shape)
+            anchor_mask = self.get_anchor_mask_export(data_dict,data_dict['spatial_features_2d'].shape)
         #print("anchor_mask",time.time()-start_time)
         new_anchors = []
         #print(self.anchors_root)
+        
         if self.in_export_mode:
             
             
@@ -329,10 +341,12 @@ class AnchorHeadSingle(nn.Layer):
         
            
         self.anchors = new_anchors
+       
         spatial_features_2d = data_dict['spatial_features_2d']
         #question
+        
         cls_preds = self.conv_cls(spatial_features_2d)
-      
+        
         
         box_preds = self.conv_box(spatial_features_2d)
         

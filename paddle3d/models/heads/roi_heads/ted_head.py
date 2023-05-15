@@ -407,7 +407,7 @@ class TEDSHead(RoIHeadBase):
             rot_num_id = str(i)
 
         rois = batch_dict['rois'].clone()
-
+        
         batch_size = batch_dict['batch_size']
         with_vf_transform = batch_dict.get('with_voxel_feature_transform', False)
         start_time=time.time()
@@ -436,8 +436,7 @@ class TEDSHead(RoIHeadBase):
             roi_grid_batch_cnt.fill_(roi_grid_coords.shape[1])
         
         pooled_features_list = []
-        t1=None
-        t2=None
+        
         for k, src_name in enumerate(self.pool_cfg['features_source']):
             
             pool_layer = self.roi_grid_pool_layers[k]
@@ -460,6 +459,7 @@ class TEDSHead(RoIHeadBase):
                 
                 # compute voxel center xyz and batch_cnt
                 cur_coords = cur_sp_tensors.indices()
+                #cur_coords=batch_dict['multi_scale_3d_features_indices'+rot_num_id][src_name]
                 cur_coords = cur_coords.transpose([1, 0])
                 
                 start_time=time.time()
@@ -483,12 +483,15 @@ class TEDSHead(RoIHeadBase):
                     cur_voxel_xyz_batch_cnt[bs_idx] = int((cur_coords[:, 0] == bs_idx).sum().item())
                                 
                
+               
                 
-            
+               
                 v2p_ind_tensor = generate_voxel2pinds(cur_sp_tensors.shape,
                                                   cur_coords)
                
+                
                 v2p_ind_tensor = v2p_ind_tensor.astype('int32')
+                
                 # compute the grid coordinates in this scale, in [batch_idx, x y z] order
                 cur_roi_grid_coords = paddle.floor(roi_grid_coords / cur_stride)
                 
@@ -507,9 +510,10 @@ class TEDSHead(RoIHeadBase):
                     voxel2point_indices=v2p_ind_tensor
                 )
                 
+               
                 pooled_features=paddle.reshape(pooled_features,shape=[ -1, self.pool_cfg['grid_size'] ** 3,pooled_features.shape[-1]])      # (BxN, 6x6x6, C)
                 pooled_features_list.append(pooled_features)
-        
+       
         ms_pooled_features = paddle.concat(pooled_features_list, axis=-1)
         
         return ms_pooled_features
@@ -595,106 +599,76 @@ class TEDSHead(RoIHeadBase):
         all_scores = []
 
         all_shared_features = []
-        if self.in_export_mode:
+        t=[]
+        for i in range(self.rot_num):
+            rot_num_id = str(i)
+
+            if i >= 1 and 'transform_param' in batch_dict:
+                batch_dict['rois'] = self.roi_x_trans(batch_dict['rois'], i, batch_dict['transform_param'])
+
+            if self.training:
+                start_time=time.time()
+                targets_dict = self.assign_targets_ted(batch_dict, i, enable_dif=True)
+                #print("assign_targets_ted time:",time.time()-start_time)
+                batch_dict['rois'] = targets_dict['rois']
+
+                batch_dict['roi_labels'] = targets_dict['roi_labels']
+
+            if 'transform_param' in batch_dict:
+                start_time=time.time()
+                pooled_features = self.roi_grid_pool(batch_dict, i)
+                #print("roi_grid_pool time:",time.time()-start_time)
+            else:
+                start_time=time.time()
+                pooled_features = self.roi_grid_pool(batch_dict, 0)
+                #print("roi_grid_pool time:",time.time()-start_time)
             
-            pooled_features = self.roi_grid_pool(batch_dict, 0)
-            #return pooled_features
+            
             pooled_features=paddle.reshape(pooled_features,[pooled_features.shape[0], -1])
-            
-            shared_features = self.shared_fc_layers(pooled_features)
-            shared_features = shared_features.unsqueeze(0)  # 1,B,C  may question
+        
+            shared_features = self.shared_fc_layers(pooled_features)  ##不一样
+            shared_features = shared_features.unsqueeze(0)  # 1,B,C  
             all_shared_features.append(shared_features)
             pre_feat = paddle.concat(all_shared_features, 0)
             
             attentive_cur_feat = self.cross_attention_layers(paddle.transpose(pre_feat,[1,0,2])).unsqueeze(0)
+            
             attentive_cur_feat = paddle.concat([attentive_cur_feat, shared_features], -1)
             attentive_cur_feat = attentive_cur_feat.squeeze(0)  # B, C*2
             
             rcnn_cls = self.cls_layers(attentive_cur_feat)
+            
             rcnn_reg = self.reg_layers(attentive_cur_feat)
-           
+        
             batch_cls_preds, batch_box_preds = self.generate_predicted_boxes(
                 batch_size=batch_dict['batch_size'], rois=batch_dict['rois'], cls_preds=rcnn_cls, box_preds=rcnn_reg
             )
+
+            if self.training:
+
+                targets_dict['rcnn_cls'] = rcnn_cls
+                targets_dict['rcnn_reg'] = rcnn_reg
+                
+                
+                self.forward_ret_dict['targets_dict' + rot_num_id] = targets_dict
+                #batch_dict['targets_dict' + rot_num_id]=self.forward_ret_dict['targets_dict' + rot_num_id]
             
             batch_dict['rois'] = batch_box_preds
             batch_dict['roi_scores'] = batch_cls_preds.squeeze(-1)
+            
             outs = batch_box_preds.clone()
+            
             if 'transform_param' in batch_dict:
                 start_time=time.time()
-                
                 outs = self.pred_x_trans(outs, i, batch_dict['transform_param'])
                 
-            
-            return outs, batch_cls_preds,batch_dict
-        else:
-            for i in range(self.rot_num):
-                rot_num_id = str(i)
-
-                if i >= 1 and 'transform_param' in batch_dict:
-                    batch_dict['rois'] = self.roi_x_trans(batch_dict['rois'], i, batch_dict['transform_param'])
-
-                if self.training:
-                    start_time=time.time()
-                    targets_dict = self.assign_targets_ted(batch_dict, i, enable_dif=True)
-                    #print("assign_targets_ted time:",time.time()-start_time)
-                    batch_dict['rois'] = targets_dict['rois']
-
-                    batch_dict['roi_labels'] = targets_dict['roi_labels']
-
-                if 'transform_param' in batch_dict:
-                    start_time=time.time()
-                    pooled_features = self.roi_grid_pool(batch_dict, i)
-                    #print("roi_grid_pool time:",time.time()-start_time)
-                else:
-                    start_time=time.time()
-                    pooled_features = self.roi_grid_pool(batch_dict, 0)
-                    #print("roi_grid_pool time:",time.time()-start_time)
-                
-                pooled_features=paddle.reshape(pooled_features,[pooled_features.shape[0], -1])
-            
-                shared_features = self.shared_fc_layers(pooled_features)  ##不一样
-                shared_features = shared_features.unsqueeze(0)  # 1,B,C  
-                all_shared_features.append(shared_features)
-                pre_feat = paddle.concat(all_shared_features, 0)
-                
-                attentive_cur_feat = self.cross_attention_layers(paddle.transpose(pre_feat,[1,0,2])).unsqueeze(0)
-                
-                attentive_cur_feat = paddle.concat([attentive_cur_feat, shared_features], -1)
-                attentive_cur_feat = attentive_cur_feat.squeeze(0)  # B, C*2
-                
-                rcnn_cls = self.cls_layers(attentive_cur_feat)
-                
-                rcnn_reg = self.reg_layers(attentive_cur_feat)
-            
-                batch_cls_preds, batch_box_preds = self.generate_predicted_boxes(
-                    batch_size=batch_dict['batch_size'], rois=batch_dict['rois'], cls_preds=rcnn_cls, box_preds=rcnn_reg
-                )
-
-                if self.training:
-
-                    targets_dict['rcnn_cls'] = rcnn_cls
-                    targets_dict['rcnn_reg'] = rcnn_reg
-                    
-                    
-                    self.forward_ret_dict['targets_dict' + rot_num_id] = targets_dict
-                    #batch_dict['targets_dict' + rot_num_id]=self.forward_ret_dict['targets_dict' + rot_num_id]
-                
-                batch_dict['rois'] = batch_box_preds
-                batch_dict['roi_scores'] = batch_cls_preds.squeeze(-1)
-                
-                outs = batch_box_preds.clone()
-                
-                if 'transform_param' in batch_dict:
-                    start_time=time.time()
-                    outs = self.pred_x_trans(outs, i, batch_dict['transform_param'])
-                    
-                all_preds.append(outs)
-                all_scores.append(batch_cls_preds)
-                #print("all_preds",all_preds)
-                #print("all_score",all_scores)
-                ##exit()
-            return paddle.mean(paddle.stack(all_preds), 0), paddle.mean(paddle.stack(all_scores), 0),batch_dict
+            all_preds.append(outs)
+            all_scores.append(batch_cls_preds)
+            #print("all_preds",all_preds)
+            #print("all_score",all_scores)
+            ##exit()
+        
+        return paddle.mean(paddle.stack(all_preds), 0), paddle.mean(paddle.stack(all_scores), 0),batch_dict
 
 
     def forward(self, batch_dict):
