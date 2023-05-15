@@ -303,16 +303,15 @@ class AnchorHeadSingle(nn.Layer):
         return mask
 
     def forward(self, data_dict):
-        if 'gt_boxes' not in data_dict:
-            self.training=False
-        start_time=time.time()
+        
+        
         batch_size=data_dict["batch_size"]
         if  self.in_export_mode:
             anchor_mask=self.get_anchor_mask_export(data_dict,data_dict['spatial_features_2d'].shape)
         else:
-            start_time=time.time()
+            
             anchor_mask = self.get_anchor_mask(data_dict,data_dict['spatial_features_2d'].shape)
-            print("mask:time",time.time()-start_time)
+            
             
         #print("anchor_mask",time.time()-start_time)
         new_anchors = []
