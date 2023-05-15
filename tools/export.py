@@ -15,7 +15,7 @@
 import argparse
 import datetime
 import os
-os.environ['CUDA_VISIBLE_DEVICES']='0'
+os.environ['CUDA_VISIBLE_DEVICES']='3'
 import yaml
 
 from paddle3d.apis.config import Config

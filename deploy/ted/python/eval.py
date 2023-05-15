@@ -15,6 +15,7 @@
 
 import argparse
 import os
+os.environ['CUDA_VISIBLE_DEVICES']='1'
 import random
 
 import numpy as np
@@ -36,6 +37,8 @@ from paddle3d.utils.checkpoint import load_pretrained_model
 from paddle3d.apis.trainer import Trainer
 from paddle3d.geometries import BBoxes3D
 from paddle3d.sample import Sample, SampleMeta
+from paddle3d.ops import iou3d_nms_cuda
+from paddle3d.models.common.model_nms_utils import compute_WBF
 def convert_origin_for_eval( sample: dict):
     if sample.bboxes_3d.origin != [.5, .5, 0]:
         sample.bboxes_3d[:, :3] += sample.bboxes_3d[:, 3:6] * (
@@ -50,8 +53,9 @@ def parse_results_to_sample( results: dict, sample: dict):
         bboxes_3d = results[i]["box3d_lidar"]
         labels = results[i]["label_preds"] - 1
         confidences = results[i]["scores"]
-        bboxes_3d[..., 3:5] = bboxes_3d[..., [4, 3]]
-        bboxes_3d[..., -1] = -(bboxes_3d[..., -1] + np.pi / 2.)
+        if bboxes_3d.shape[0]>0:
+            bboxes_3d[..., 3:5] = bboxes_3d[..., [4, 3]]
+            bboxes_3d[..., -1] = -(bboxes_3d[..., -1] + np.pi / 2.)
         data.bboxes_3d = BBoxes3D(bboxes_3d)
         data.bboxes_3d.coordmode = 'Lidar'
         data.bboxes_3d.origin = [0.5, 0.5, 0.5]
@@ -125,7 +129,7 @@ def parse_args():
     parser.add_argument(
         "--config",
         type=str,
-        default="/home/aistudio/Paddle3D/configs/voxel_rcnn/voxel_rcnn_005voxel_kitti_car.yml",
+        default="/home/yw/Paddle3D/configs/ted/ted_car_deploy.yml",
        )
     parser.add_argument(
         '--batch_size',
@@ -136,6 +140,113 @@ def parse_args():
     return parser.parse_args()
 def worker_init_fn(worker_id):
     np.random.seed(1024)
+
+
+def limit(ang):
+    ang = ang % (2 * np.pi)
+
+    ang[ang > np.pi] = ang[ang > np.pi] - 2 * np.pi
+
+    ang[ang < -np.pi] = ang[ang < -np.pi] + 2 * np.pi
+
+    return ang
+def compute_WBF(det_names, det_scores, det_boxes, iou_thresh=0.85, iou_thresh2=0.03, type='mean'):
+    if len(det_names) == 0:
+        return det_names, det_scores, det_boxes
+    cluster_id = -1
+    cluster_box_dict = {}
+    cluster_score_dict = {}
+
+    cluster_merged_dict = {}
+    cluster_name_dict = {}
+    '''
+    det_boxes[:, 6] = common_utils.limit_period(
+        det_boxes[:, 6], offset=0.5, period=2 * np.pi
+    )
+    '''
+    det_boxes[:, 6] = limit(det_boxes[:, 6])
+
+    for i, box in enumerate(det_boxes):
+
+        score = det_scores[i]
+        name = det_names[i]
+        if i == 0:
+            cluster_id += 1
+            cluster_box_dict[cluster_id] = [box]
+            cluster_score_dict[cluster_id] = [score]
+            cluster_merged_dict[cluster_id] = box
+            cluster_name_dict[cluster_id] = name
+            continue
+
+        valid_clusters = []
+        keys = list(cluster_merged_dict)
+        keys.sort()
+        for key in keys:
+            valid_clusters.append(cluster_merged_dict[key])
+
+        valid_clusters = np.array(valid_clusters).reshape((-1, 7))
+        boxes_a=paddle.to_tensor(np.array([box[:7]]),dtype='float32',place=paddle.CPUPlace())
+        boxes_b=paddle.to_tensor(valid_clusters,dtype='float32',place=paddle.CPUPlace())
+        assert boxes_a.shape[1] == 7 and boxes_b.shape[1] == 7
+        
+        ious = iou3d_nms_cuda.boxes_iou_bev_cpu(boxes_a,boxes_b)
+        ious=ious.numpy()
+        argmax = np.argmax(ious, -1)[0]
+        max_iou = np.max(ious, -1)[0]
+
+        if max_iou >= iou_thresh:
+            cluster_box_dict[argmax].append(box)
+            cluster_score_dict[argmax].append(score)
+        elif iou_thresh2<=max_iou<iou_thresh:
+            continue
+        else:
+            cluster_id += 1
+            cluster_box_dict[cluster_id] = [box]
+            cluster_score_dict[cluster_id] = [score]
+            cluster_merged_dict[cluster_id] = box
+            cluster_name_dict[cluster_id] = name
+
+    out_boxes = []
+    out_scores = []
+    out_name = []
+    for i in cluster_merged_dict.keys():
+        if type == 'mean':
+            score_sum = 0
+            box_sum = paddle.zeros([7])
+
+            angles = []
+
+            for j, sub_score in enumerate(cluster_score_dict[i]):
+                box_sum += cluster_box_dict[i][j]
+                score_sum += sub_score
+                angles.append(cluster_box_dict[i][j][6])
+            box_sum /= len(cluster_score_dict[i])
+            score_sum /= len(cluster_score_dict[i])
+
+            cluster_merged_dict[i][:6] = box_sum[:6]
+
+            angles = np.array(angles)
+            angles = limit(angles)
+            res = angles - cluster_merged_dict[i][6]
+            res = limit(res)
+            res = res[paddle.abs(res) < 1.5]
+            res = res.mean()
+            b = cluster_merged_dict[i][6] + res
+            cluster_merged_dict[i][6] = b
+
+            out_scores.append(score_sum)
+            out_boxes.append(cluster_merged_dict[i])
+            out_name.append(cluster_name_dict[i])
+        elif type == 'max':
+            out_scores.append(np.max(cluster_score_dict[i]))
+            out_boxes.append(cluster_merged_dict[i])
+            out_name.append(cluster_name_dict[i])
+
+    out_boxes = np.array(out_boxes)
+    out_scores = np.array(out_scores)
+    out_names = np.array(out_name)
+
+    return out_names, out_scores, out_boxes
 
 def read_point(file_path, num_point_dim):
     points = np.fromfile(file_path, np.float32).reshape(-1, num_point_dim)
@@ -193,19 +304,7 @@ def init_predictor(model_file,
     return predictor
 
 
-def parse_result(box3d_lidar, label_preds, scores):
-    num_bbox3d, bbox3d_dims = box3d_lidar.shape
-    for box_idx in range(num_bbox3d):
-        # filter fake results: score = -1
-        if scores[box_idx] < 0:
-            continue
-        '''print(
-            "Score: {} Label: {} Box(x_c, y_c, z_c, w, l, h, -rot): {} {} {} {} {} {} {}"
-            .format(scores[box_idx], label_preds[box_idx],
-                    box3d_lidar[box_idx, 0], box3d_lidar[box_idx, 1],
-                    box3d_lidar[box_idx, 2], box3d_lidar[box_idx, 3],
-                    box3d_lidar[box_idx, 4], box3d_lidar[box_idx, 5],
-                    box3d_lidar[box_idx, 6]))'''
+
 
 
 def run(predictor, points):
@@ -276,24 +375,27 @@ def main(args):
     print("use_trt:",args.use_trt)
     print("trt_precision:",args.trt_precision)
     
-    points = preprocess(args.lidar_file, args.num_point_dim,
-                        args.point_cloud_range)
-    for i in range(100):
-        box3d_lidar, label_preds, scores = run(predictor, points)
+    args.point_cloud_range=[0,-40,-3,70.4,40,1]
     total_time=0
     total=0
-    
+    min_time=100
     for idx, sample in trainer.logger.enumerate(trainer.eval_dataloader, msg=msg):
         start_time = time.time()
         
-        points = filter_points_outside_range(np.array(sample['data'][0]), 
+        points = filter_points_outside_range(np.array(sample['points'][0]), 
                         args.point_cloud_range)
         print("Preprocess time: {}".format(time.time() - start_time))
         start_time = time.time()
         box3d_lidar, label_preds, scores = run(predictor, points)
+        label_preds,scores,box3d_lidar =compute_WBF(paddle.to_tensor(label_preds), paddle.to_tensor(scores),paddle.to_tensor(box3d_lidar))
         step_time=time.time() - start_time
+        min_time=min(min_time,step_time)
         start_time=time.time()
         result=[]
+        if scores.shape[0]>0:
+            scores=scores.reshape([-1])  
+        if label_preds.shape[0]>0:
+            label_preds=label_preds.reshape([-1])
         result.append({'box3d_lidar':box3d_lidar,'scores':scores,'label_preds':label_preds})
         result=parse_results_to_sample(result, sample)
 
@@ -301,7 +403,7 @@ def main(args):
         print("parse result time: {}".format(time.time() - start_time))
         total_time=total_time+step_time
         total=total+1
-    
+    print("min_time",min_time)
     print("avg_time:",total_time/total)
     metrics = metric_obj.compute(verbose=True)
    

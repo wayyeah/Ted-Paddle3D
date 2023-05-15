@@ -1,1 +1,1 @@
-python tools/evaluate.py --config configs/ted/ted_car.yml --model /home/yw/Paddle3D/model.pdparams --batch_size 1 --num_workers 4
+python tools/evaluate.py --config configs/ted/ted_car.yml --model /home/yw/Paddle3D/output_ted_rot_num3_80/epoch_80/model.pdparams --batch_size 1 --num_workers 4

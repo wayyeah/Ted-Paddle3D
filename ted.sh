@@ -1,1 +1,1 @@
-python  tools/train.py --config /home/yw/Paddle3D/configs/ted/ted_car.yml --save_dir ./output_ted_rot_num1_40 --num_workers 8 --save_interval 1 --keep_checkpoint_max 80
+python  tools/train.py --config /home/yw/Paddle3D/configs/ted/ted_car.yml --save_dir ./output_ted_rot_num3_40 --num_workers 8 --save_interval 1 --keep_checkpoint_max 80

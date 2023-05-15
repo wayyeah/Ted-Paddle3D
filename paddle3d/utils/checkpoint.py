@@ -79,6 +79,7 @@ def load_pretrained_model_from_state_dict(model: paddle.nn.Layer,
     """
     model_state_dict = model.state_dict()
     keys = model_state_dict.keys()
+    
     num_params_loaded = 0
     for k in keys:
         if k not in state_dict:

@@ -1,6 +1,6 @@
 python infer.py --model_file /home/yw/Paddle3D/output/ted.pdmodel \
     --params_file /home/yw/Paddle3D/output/ted.pdiparams \
-    --lidar_file /home/yw/Paddle3D/000013.bin  \
+    --lidar_file /mnt/8tssd/kitti/detection/training/velodyne/000001.bin  \
     --point_cloud_range 0 -40 -3 70.4 40 1 \
     --num_point_dim 4 \
     --use_trt 0  \

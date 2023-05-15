@@ -61,10 +61,10 @@ class KittiPCDataset(KittiDetDataset):
             sample.ignored_bboxes_3d = ignored_bboxes_3d
             if self.use_road_plane:
                 sample.road_plane = self.load_road_plane(index)
-            sample.rot_num=3
+            sample.rot_num=1
         else:
             
-            sample.rot_num=3
+            sample.rot_num=1
         
         if self.transforms:
             

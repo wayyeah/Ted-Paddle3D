@@ -211,12 +211,15 @@ class Ted(nn.Layer):
         #print("neck1 time:",time.time()-start_time) 
         
         start_time=time.time()
+        
         batch_dict = self.dense_head(batch_dict)
         #print("dense_head time:",time.time()-start_time)
         
         start_time=time.time()
+        #print(self.roi_head(batch_dict))
         #return self.roi_head(batch_dict)
         batch_dict = self.roi_head(batch_dict)
+       
         #print("roi_head time:",time.time()-start_time)
         #print("forward time",time.time()-start_time1)
         #print(batch_dict)
@@ -241,13 +244,15 @@ class Ted(nn.Layer):
             np.save("/home/yw/gt_boxes.npy",batch_dict['gt_boxes'][0][:,:-1]) """
             if not getattr(self, "in_export_mode", False):
                 pred_dicts = self.post_processing(batch_dict)
+                print(batch_dict['points'].sum())
                 preds = self._parse_results_to_sample(pred_dicts, batch_dict)
-                
+                print(preds[0].bboxes_3d)
                 return {'preds': preds}
             else:
                 
                 pred_dicts = self.post_processing(batch_dict)
-                return pred_dicts[0]
+                
+                return pred_dicts
             
         
     def collate_fn(self, batch: List):
@@ -315,6 +320,7 @@ class Ted(nn.Layer):
             batch_size = batch_dict['batch_size']
         recall_dict = {}
         pred_dicts = []
+        
         for index in range(batch_size):
             if batch_dict.get('batch_index', None) is not None:
                 assert batch_dict['batch_box_preds'].shape.__len__() == 2
@@ -325,7 +331,7 @@ class Ted(nn.Layer):
 
             box_preds = batch_dict['batch_box_preds'][batch_mask]
             src_box_preds = box_preds
-
+            
             if not isinstance(batch_dict['batch_cls_preds'], list):
                 cls_preds = batch_dict['batch_cls_preds'][batch_mask]
 
@@ -341,7 +347,7 @@ class Ted(nn.Layer):
                 src_cls_preds = cls_preds
                 if not batch_dict['cls_preds_normalized']:
                     cls_preds = [F.sigmoid(x) for x in cls_preds]
-
+            
             if self.post_process_cfg["nms_config"]["multi_classes_nms"]:
                 """ if not isinstance(cls_preds, list):
                     cls_preds = [cls_preds]
@@ -372,23 +378,9 @@ class Ted(nn.Layer):
                 label_preds = paddle.argmax(cls_preds, axis=-1)
                 cls_preds = paddle.max(cls_preds, axis=-1)
 
-               
+                
                 if self.in_export_mode:
-                    if 'has_class_labels' not in batch_dict:
-                        batch_dict['has_class_labels'] = False
-
-                    argmax_cls_preds = paddle.argmax(cls_preds, axis=-1)
-                    argmax_cls_preds_plus_one = argmax_cls_preds + 1
-
-                    label_preds = paddle.zeros_like(argmax_cls_preds)
-
-                    if 'roi_labels' in batch_dict:
-                        label_key = 'roi_labels'
-                    else:
-                        label_key = 'batch_pred_labels'
-
-                    for i in range(len(batch_dict[label_key])):
-                        label_preds = paddle.where(batch_dict['has_class_labels'], batch_dict[label_key][i], argmax_cls_preds_plus_one)
+                    label_preds = label_preds + 1
 
                 else:
                     if 'has_class_labels' not in batch_dict:
@@ -399,7 +391,7 @@ class Ted(nn.Layer):
                         
                     else:
                         label_preds = label_preds + 1
-                   
+                  
                 if 'wbf' not in self.post_process_cfg:
                     self.post_process_cfg['wbf']=True
                 if self.post_process_cfg['wbf']:
@@ -458,7 +450,7 @@ class Ted(nn.Layer):
                 pred_dicts.append(record_dict)
             else:
                 pred_dicts.append([final_boxes, final_scores, final_labels])
-            
+          
             
 
            
