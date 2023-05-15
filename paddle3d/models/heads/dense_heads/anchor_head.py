@@ -238,7 +238,7 @@ class AnchorHeadSingle(nn.Layer):
         in_y = paddle.clip(in_y,max=shape[-2]//10-1)
         mask_large = mask_large.clone().detach().cpu().numpy()
         mask_large[in_y,in_x] = 1
-        return mask_large
+        
         mask_large_index = np.argwhere( mask_large>0 )
         mask_large_index = mask_large_index*10
         index_list=[]
@@ -310,7 +310,10 @@ class AnchorHeadSingle(nn.Layer):
         if  self.in_export_mode:
             anchor_mask=self.get_anchor_mask_export(data_dict,data_dict['spatial_features_2d'].shape)
         else:
-            anchor_mask = self.get_anchor_mask_export(data_dict,data_dict['spatial_features_2d'].shape)
+            start_time=time.time()
+            anchor_mask = self.get_anchor_mask(data_dict,data_dict['spatial_features_2d'].shape)
+            print("mask:time",time.time()-start_time)
+            
         #print("anchor_mask",time.time()-start_time)
         new_anchors = []
         #print(self.anchors_root)
