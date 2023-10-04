@@ -222,130 +222,16 @@ class AnchorHeadSingle(nn.Layer):
         ans = val - paddle.floor(val / period + offset) * period
         return ans
 
-    def get_anchor_mask(self, data_dict, shape):
-        stride = np.round(self.voxel_size*8.*10.)
-        minx=self.range[0]
-        miny=self.range[1]
-        points = data_dict["points"]
-        mask = paddle.zeros([shape[-2],shape[-1]])
-        mask_large = paddle.zeros([shape[-2]//10,shape[-1]//10])
-        in_x = (points[:, 1] - minx) / stride
-        in_y = (points[:, 2] - miny) / stride
-        
-        in_x=in_x.astype("int32")
-        in_y=in_y.astype("int32")
-        in_x =paddle.clip( in_x,max=shape[-1]//10-1)
-        in_y = paddle.clip(in_y,max=shape[-2]//10-1)
-        mask_large = mask_large.clone().detach().cpu().numpy()
-        mask_large[in_y,in_x] = 1
-        
-        mask_large_index = np.argwhere( mask_large>0 )
-        mask_large_index = mask_large_index*10
-        index_list=[]
-        for i in np.arange(-10, 10, 1):
-            for j in np.arange(-10, 10, 1):
-                index_list.append(mask_large_index+[i,j])
-        index_list = np.concatenate(index_list,0)
-        inds = paddle.to_tensor((index_list),dtype="int64")
-        mask=mask.numpy()
-        mask[inds[:,0],inds[:,1]]=1
-        mask=paddle.to_tensor(mask).astype("bool")
-        
-        return mask
-
-    def get_anchor_mask_export(self, data_dict, shape):
-        stride = np.round(self.voxel_size*8.*10.)
-        minx=self.range[0]
-        miny=self.range[1]
-        points = data_dict["points"]
-        
-        mask = paddle.zeros([shape[-2],shape[-1]])
-        mask_large = paddle.zeros([shape[-2]//10,shape[-1]//10])
-        in_x = (points[:, 1] - minx) / stride
-        in_y = (points[:, 2] - miny) / stride
-
-        in_x=in_x.astype("int32")
-        in_y=in_y.astype("int32")
-        in_x = paddle.clip(in_x,max=shape[-1]//10-1)
-        in_y = paddle.clip(in_y,max=shape[-2]//10-1)
-
-        indices_large = paddle.stack([in_y, in_x], axis=1)
-
-        unique_indices, inverse_index, counts = paddle.unique(indices_large, return_inverse=True, return_counts=True, axis=0)
-
-        # Create a tensor of ones with shape (num_indices,)
-        updates = paddle.ones([unique_indices.shape[0]])
-
-        mask_large = paddle.scatter_nd(unique_indices, updates, [shape[-2]//10,shape[-1]//10]).astype('bool')
-        
-
-        mask_large_index = paddle.nonzero(mask_large > 0)
-        mask_large_index = mask_large_index * 10
-
-        index_list=[]
-        
-        for i in paddle.arange(-10, 10, 1):
-            for j in paddle.arange(-10, 10, 1):
-                index_list.append(mask_large_index + paddle.to_tensor([i,j]).reshape([1,2]))
-        index_list = paddle.concat(index_list, 0)
-        #存在索引小于0
-        negative_values_first_column = index_list[:, 0] < 0
-        negative_values_second_column = index_list[:, 1] < 0
-        large_values_first_column=index_list[:, 0]>=shape[-2]
-        large_values_second_column=index_list[:, 1]>=shape[-1]
-        positive_rows = paddle.where((negative_values_first_column == 0) & (negative_values_second_column == 0)&(large_values_first_column==0)&(large_values_second_column==0))[0]
-        index_list=index_list[ positive_rows]
-        unique_indices, inverse_index, counts = paddle.unique(index_list, return_inverse=True, return_counts=True, axis=0)
-        unique_indices=unique_indices.reshape([-1,2])
-        updates = paddle.ones([len(unique_indices)], dtype='int32')
-        mask = paddle.scatter_nd(unique_indices,  updates, [shape[-2],shape[-1]]).astype('bool')
-        
-        return mask
-
+    
     def forward(self, data_dict):
         
         
         batch_size=data_dict["batch_size"]
-        if  self.in_export_mode:
-            anchor_mask=self.get_anchor_mask_export(data_dict,data_dict['spatial_features_2d'].shape)
-        else:
-            
-            anchor_mask = self.get_anchor_mask(data_dict,data_dict['spatial_features_2d'].shape)
-            
-            
-        #print("anchor_mask",time.time()-start_time)
-        new_anchors = []
-        #print(self.anchors_root)
         
-        if self.in_export_mode:
-            
-            
-            
-            anchors=getattr(self, 'buffer_0')
-           
-            
-            anchors_t=anchors.reshape([anchors.shape[1]*anchors.shape[2],anchors.shape[3],anchors.shape[4],anchors.shape[5]])
-            
-            mask_t=anchor_mask.reshape([anchor_mask.shape[0]*anchor_mask.shape[1]])
-
-            anchors_t=anchors_t[mask_t]
-           
-            anchors_t=anchors_t.reshape([anchors.shape[0],int((mask_t>0).sum()),anchors.shape[3],anchors.shape[4],anchors.shape[5]])
-            new_anchors.append(anchors_t)
-            #new_anchors=self.anchors_root
-
-
-        else:
-            for i in range (len(self.anchors_root)):
-                anchors_numpy = self.anchors_root[i].numpy()
-                anchors_numpy = anchors_numpy[:,anchor_mask.numpy(),...]
-                new_anchors.append(paddle.to_tensor(anchors_numpy))
-        
-           
-        self.anchors = new_anchors
+        self.anchors = self.anchors_root
        
         spatial_features_2d = data_dict['spatial_features_2d']
-        #question
+        
         
         cls_preds = self.conv_cls(spatial_features_2d)
         
@@ -356,20 +242,12 @@ class AnchorHeadSingle(nn.Layer):
         
         cls_preds = cls_preds.transpose([0, 2, 3, 1])
         cls_preds=cls_preds.reshape([cls_preds.shape[0],cls_preds.shape[1]*cls_preds.shape[2],cls_preds.shape[3]])
-        mask_t=anchor_mask.reshape([-1]) # H W # 1 HW
-        cls_preds_temp=paddle.zeros([cls_preds.shape[0],cls_preds[0][mask_t].shape[0],cls_preds.shape[2]])
-        for i in range(cls_preds_temp.shape[0]):
-            cls_preds_temp[i]=cls_preds[i][mask_t]
-        cls_preds=cls_preds_temp
+        
        
       
 
         box_preds = box_preds.transpose([0, 2, 3, 1])
         box_preds = box_preds.reshape([box_preds.shape[0],box_preds.shape[1]*box_preds.shape[2],box_preds.shape[3]])
-        box_preds_temp=paddle.zeros([box_preds.shape[0],box_preds[0][mask_t].shape[0],box_preds.shape[2]])
-        for i in range(box_preds_temp.shape[0]):
-            box_preds_temp[i]=box_preds[i][mask_t]
-        box_preds=box_preds_temp
 
         self.forward_ret_dict['cls_preds'] = cls_preds  
         self.forward_ret_dict['box_preds'] = box_preds  #may question
@@ -378,11 +256,6 @@ class AnchorHeadSingle(nn.Layer):
             dir_cls_preds = self.conv_dir_cls(spatial_features_2d)
             dir_cls_preds=dir_cls_preds.transpose([0, 2, 3, 1])
             dir_cls_preds=dir_cls_preds.reshape([dir_cls_preds.shape[0],dir_cls_preds.shape[1]*dir_cls_preds.shape[2],dir_cls_preds.shape[3]])
-            dir_cls_preds_temp=paddle.zeros([dir_cls_preds.shape[0],dir_cls_preds[0][mask_t].shape[0],dir_cls_preds.shape[2]])
-            for i in range(dir_cls_preds_temp.shape[0]):
-                dir_cls_preds_temp[i]=dir_cls_preds[i][mask_t]
-            dir_cls_preds=dir_cls_preds_temp
-
             self.forward_ret_dict['dir_cls_preds'] =dir_cls_preds
         else:
             dir_cls_preds=None
